@@ -1,0 +1,144 @@
+1. DDL для таблиц
+1.1. Справочник сущностей (d_entities)
+
+CREATE TABLE IF NOT EXISTS d_entities (
+    entity_id INT PRIMARY KEY,
+    entity_name VARCHAR(100) NOT NULL,
+    entity_type VARCHAR(50) NOT NULL,
+    country VARCHAR(3),
+    region VARCHAR(50),
+    start_date DATE NOT NULL,
+    end_date DATE,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_entity_type CHECK (entity_type IN ('store', 'warehouse', 'online', 'franchise')),
+    CONSTRAINT chk_dates CHECK (end_date IS NULL OR end_date > start_date)
+);
+
+1.2. Таблица фактов прибыли и убытков (f_profit_and_loss)
+
+-- Таблица: f_profit_and_loss
+CREATE TABLE IF NOT EXISTS f_profit_and_loss (
+    record_id BIGSERIAL PRIMARY KEY,
+    entity_id INT NOT NULL REFERENCES d_entities(entity_id),
+    report_date DATE NOT NULL,
+    revenue DECIMAL(15,2) NOT NULL,
+    cost_of_goods DECIMAL(15,2) NOT NULL,
+    operating_expenses DECIMAL(15,2) NOT NULL,
+    marketing_expenses DECIMAL(15,2) DEFAULT 0,
+    taxes DECIMAL(15,2) DEFAULT 0,
+    other_expenses DECIMAL(15,2) DEFAULT 0,
+    net_profit DECIMAL(15,2) GENERATED ALWAYS AS (revenue - cost_of_goods - operating_expenses - marketing_expenses - taxes - other_expenses) STORED,
+    profit_margin DECIMAL(5,2) GENERATED ALWAYS AS (CASE WHEN revenue > 0 THEN ((revenue - cost_of_goods - operating_expenses - marketing_expenses - taxes - other_expenses) / revenue * 100) ELSE 0 END) STORED,
+    data_source VARCHAR(50) DEFAULT 'ERP',
+    quality_flag VARCHAR(1) DEFAULT 'Y',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_revenue_positive CHECK (revenue >= 0),
+    CONSTRAINT chk_costs_positive CHECK (cost_of_goods >= 0 AND operating_expenses >= 0),
+    CONSTRAINT chk_profit_margin_range CHECK (profit_margin BETWEEN -100 AND 100),
+    CONSTRAINT chk_quality_flag CHECK (quality_flag IN ('Y', 'N', 'S')),
+    CONSTRAINT uq_entity_date UNIQUE (entity_id, report_date)
+);
+
+1.3  Таблица фактов маржинальности (f_marginality_base)
+-- Таблица: f_marginality_base
+CREATE TABLE IF NOT EXISTS f_marginality_base (
+    marginality_id BIGSERIAL PRIMARY KEY,
+    entity_id INT NOT NULL REFERENCES d_entities(entity_id),
+    product_category VARCHAR(50) NOT NULL,
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    units_sold INT NOT NULL,
+    avg_unit_price DECIMAL(10,2) NOT NULL,
+    avg_unit_cost DECIMAL(10,2) NOT NULL,
+    total_revenue DECIMAL(15,2) GENERATED ALWAYS AS (units_sold * avg_unit_price) STORED,
+    total_cost DECIMAL(15,2) GENERATED ALWAYS AS (units_sold * avg_unit_cost) STORED,
+    gross_profit DECIMAL(15,2) GENERATED ALWAYS AS (units_sold * (avg_unit_price - avg_unit_cost)) STORED,
+    gross_margin DECIMAL(5,2) GENERATED ALWAYS AS (CASE WHEN (units_sold * avg_unit_price) > 0 THEN ((units_sold * (avg_unit_price - avg_unit_cost)) / (units_sold * avg_unit_price) * 100) ELSE 0 END) STORED,
+    discount_rate DECIMAL(5,2) DEFAULT 0,
+    return_rate DECIMAL(5,2) DEFAULT 0,
+    data_quality_score INT DEFAULT 100,
+    etl_batch_id VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+2. Сэмплы данных для тестирования
+2.1. Сэмплы для d_entities
+-- Вставка тестовых данных в d_entities
+INSERT INTO d_entities (entity_id, entity_name, entity_type, country, region, start_date, end_date, is_active) VALUES
+(1, 'Main Store NYC', 'store', 'USA', 'Northeast', '2020-01-01', NULL, true),
+(2, 'Online Shop', 'online', 'USA', 'National', '2020-03-15', NULL, true),
+(3, 'LA Warehouse', 'warehouse', 'USA', 'West', '2020-06-01', NULL, true),
+(4, 'Chicago Franchise', 'franchise', 'USA', 'Midwest', '2021-02-01', NULL, true),
+(5, 'Miami Store', 'store', 'USA', 'Southeast', '2021-05-01', '2023-12-31', false),
+(6, 'Texas Outlet', 'store', 'USA', 'South', '2021-08-01', NULL, true),
+(7, 'Seattle Warehouse', 'warehouse', 'USA', 'West', '2022-01-01', NULL, true),
+(8, 'Canada Online', 'online', 'CAN', 'National', '2022-03-01', NULL, true),
+(9, 'UK Branch', 'store', 'GBR', 'Europe', '2022-06-01', NULL, true),
+(10, 'Berlin Store', 'store', 'DEU', 'Europe', '2022-09-01', NULL, true),
+(11, 'Paris Franchise', 'franchise', 'FRA', 'Europe', '2023-01-01', NULL, true),
+(12, 'Tokyo Store', 'store', 'JPN', 'Asia', '2023-04-01', NULL, true);
+
+-- Несколько проблемных записей для тестов Soda
+INSERT INTO d_entities (entity_id, entity_name, entity_type, country, region, start_date, end_date, is_active) VALUES
+(13, 'Duplicate Store', 'store', 'USA', 'Northeast', '2023-01-01', NULL, true), -- Дубликат региона
+(14, '', 'warehouse', 'USA', 'West', '2023-02-01', NULL, true), -- Пустое имя
+(15, 'Future Store', 'store', 'USA', 'South', '2025-01-01', NULL, true), -- Будущая дата
+(16, 'Invalid Type', 'invalid_type', 'USA', 'West', '2023-03-01', NULL, true), -- Неправильный тип
+(17, 'Long Name Store With Very Long Name That Exceeds Normal Limits', 'store', 'USA', 'North', '2023-04-01', NULL, true); -- Слишком длинное имя
+
+2.2. Сэмплы для f_profit_and_loss
+-- Вставка тестовых данных в f_profit_and_loss
+INSERT INTO f_profit_and_loss (entity_id, report_date, revenue, cost_of_goods, operating_expenses, marketing_expenses, taxes, other_expenses, data_source, quality_flag) VALUES
+-- Январь 2024
+(1, '2024-01-31', 150000.00, 75000.00, 40000.00, 10000.00, 15000.00, 5000.00, 'ERP', 'Y'),
+(2, '2024-01-31', 250000.00, 125000.00, 60000.00, 20000.00, 25000.00, 10000.00, 'CRM', 'Y'),
+(3, '2024-01-31', 80000.00, 40000.00, 25000.00, 5000.00, 8000.00, 2000.00, 'ERP', 'Y'),
+(4, '2024-01-31', 120000.00, 60000.00, 35000.00, 8000.00, 12000.00, 5000.00, 'Franchise', 'Y'),
+
+-- Февраль 2024
+(1, '2024-02-29', 160000.00, 80000.00, 42000.00, 12000.00, 16000.00, 6000.00, 'ERP', 'Y'),
+(2, '2024-02-29', 270000.00, 135000.00, 65000.00, 22000.00, 27000.00, 12000.00, 'CRM', 'Y'),
+(3, '2024-02-29', 85000.00, 42500.00, 26000.00, 6000.00, 8500.00, 2500.00, 'ERP', 'Y'),
+(4, '2024-02-29', 125000.00, 62500.00, 36000.00, 9000.00, 12500.00, 6000.00, 'Franchise', 'Y'),
+
+-- Март 2024
+(1, '2024-03-31', 155000.00, 77500.00, 41000.00, 11000.00, 15500.00, 5500.00, 'ERP', 'Y'),
+(2, '2024-03-31', 260000.00, 130000.00, 62000.00, 21000.00, 26000.00, 11000.00, 'CRM', 'Y'),
+(3, '2024-03-31', 82000.00, 41000.00, 25500.00, 5500.00, 8200.00, 2300.00, 'ERP', 'Y'),
+(4, '2024-03-31', 122000.00, 61000.00, 35500.00, 8500.00, 12200.00, 5500.00, 'Franchise', 'Y'),
+
+-- Проблемные данные для тестов Soda
+(1, '2024-04-30', -5000.00, 3000.00, 2000.00, 500.00, 0.00, 0.00, 'ERP', 'N'), -- Отрицательная выручка
+(2, '2024-04-30', 100000.00, -20000.00, 30000.00, 5000.00, 10000.00, 2000.00, 'CRM', 'S'), -- Отрицательная себестоимость
+(999, '2024-04-30', 50000.00, 25000.00, 15000.00, 3000.00, 5000.00, 2000.00, 'Manual', 'Y'), -- Несуществующий entity_id
+(3, '2024-01-31', 90000.00, 45000.00, 27000.00, 7000.00, 9000.00, 3000.00, 'ERP', 'Y'), -- Дубликат (две записи за один месяц)
+(NULL, '2024-04-30', 40000.00, 20000.00, 12000.00, 2000.00, 4000.00, 1000.00, 'Manual', 'Y'), -- NULL entity_id
+(4, '2024-05-31', 130000.00, 65000.00, 37000.00, 9500.00, 13000.00, 6500.00, NULL, 'Y'); -- NULL data_source
+
+2.3. Сэмплы для f_marginality_base
+-- Вставка тестовых данных в f_marginality_base
+INSERT INTO f_marginality_base (entity_id, product_category, period_start, period_end, units_sold, avg_unit_price, avg_unit_cost, discount_rate, return_rate, data_quality_score, etl_batch_id) VALUES
+-- Q1 2024
+(1, 'Electronics', '2024-01-01', '2024-03-31', 1500, 299.99, 180.00, 5.0, 2.0, 95, 'BATCH_2024Q1'),
+(1, 'Clothing', '2024-01-01', '2024-03-31', 3000, 49.99, 25.00, 10.0, 5.0, 92, 'BATCH_2024Q1'),
+(2, 'Electronics', '2024-01-01', '2024-03-31', 3500, 299.99, 180.00, 7.0, 3.0, 96, 'BATCH_2024Q1'),
+(2, 'Home Goods', '2024-01-01', '2024-03-31', 2000, 79.99, 45.00, 8.0, 4.0, 94, 'BATCH_2024Q1'),
+
+-- Q2 2024
+(1, 'Electronics', '2024-04-01', '2024-06-30', 1600, 309.99, 185.00, 6.0, 2.5, 97, 'BATCH_2024Q2'),
+(1, 'Clothing', '2024-04-01', '2024-06-30', 3200, 52.99, 26.50, 12.0, 6.0, 93, 'BATCH_2024Q2'),
+(2, 'Electronics', '2024-04-01', '2024-06-30', 3800, 309.99, 185.00, 8.0, 3.5, 98, 'BATCH_2024Q2'),
+(2, 'Home Goods', '2024-04-01', '2024-06-30', 2200, 82.99, 46.50, 9.0, 4.5, 95, 'BATCH_2024Q2'),
+
+-- Проблемные данные для тестов Soda
+(1, 'Books', '2024-01-01', '2023-12-31', 500, 19.99, 25.00, 5.0, 1.0, 85, 'BATCH_PROBLEM'), -- period_end < period_start
+(2, 'Toys', '2024-04-01', '2024-06-30', -100, 29.99, 15.00, 0.0, 0.0, 70, 'BATCH_PROBLEM'), -- Отрицательные unit_sold
+(3, 'Electronics', '2024-04-01', '2024-06-30', 800, 15.99, 20.00, 0.0, 0.0, 88, 'BATCH_PROBLEM'), -- Цена < себестоимости
+(4, 'Clothing', '2024-04-01', '2024-06-30', 1500, 39.99, 20.00, 150.0, 200.0, 60, 'BATCH_PROBLEM'), -- Неверные проценты (>100%)
+(5, 'Home Goods', '2024-04-01', '2024-06-30', 1000, 59.99, 35.00, 10.0, 5.0, -10, 'BATCH_PROBLEM'), -- Отрицательный quality_score
+(6, 'Sports', '2024-04-01', '2024-06-30', 1200, 89.99, 50.00, 10.0, 5.0, 101, 'BATCH_PROBLEM'); -- quality_score > 100
