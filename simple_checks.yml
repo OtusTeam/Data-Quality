@@ -45,7 +45,7 @@ checks for f_orders:
   # Свежесть
   - freshness using order_date < 7d
   
-  # Референциальная целостность
+  # Ссылочная целостность
   - orphaned_orders = 0:
       orphaned_orders query: |
         SELECT COUNT(*)
