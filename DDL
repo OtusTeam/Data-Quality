@@ -1,3 +1,5 @@
+=== 1. Создание простых таблиц: ===
+
 # Подключаемся к PostgreSQL и создаем простые таблицы
 PGPASSWORD=airflow psql -h localhost -p 5432 -U airflow -d airflow << 'EOF'
 
@@ -42,8 +44,12 @@ CREATE TABLE f_purchases (
     updated_dttm TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+EOF
 
 
+-------------------
+
+===  2. Тестовые данные с преднамеренными ошибками:  ===
 
 PGPASSWORD=airflow psql -h localhost -p 5432 -U airflow -d airflow << 'EOF'
 
@@ -108,4 +114,136 @@ SELECT 'f_purchases', COUNT(*) FROM f_purchases;
 
 EOF
 
+
+----------------
+
+=== 3. Файл проверок Soda: ===
+cat > ~/soda/checks/simple_checks.yml << 'EOF'
+# ПРОСТЫЕ ПРОВЕРКИ ДЛЯ ДЕМОНСТРАЦИИ
+
+# 1. Проверки для справочника (d_entities)
+checks for d_entities:
+  # Объем
+  - row_count > 0:
+      name: "Справочник не пустой"
+  
+  - row_count between 5 and 15:
+      name: "Количество записей в разумных пределах"
+  
+  # Полнота
+  - missing_count(entity_name) = 0:
+      name: "Нет сущностей без имени"
+  
+  - missing_percent(country_code) < 20%:
+      name: "Не более 20% без кода страны"
+  
+  # Уникальность
+  - duplicate_count(entity_id) = 0:
+      name: "Нет дубликатов ID"
+  
+  # Валидность
+  - invalid_count(entity_type) = 0:
+      valid values: ['store', 'online', 'warehouse']
+      name: "Типы сущностей валидны"
+  
+  - invalid_count(created_date) = 0:
+      valid max: ${CURRENT_DATE}
+      name: "Дата создания не в будущем"
+
+# 2. Проверки для заказов (f_orders)
+checks for f_orders:
+  # Объем
+  - row_count > 0:
+      name: "Таблица заказов не пустая"
+  
+  # Полнота
+  - missing_count(entity_id) = 0:
+      name: "Нет заказов без entity_id"
+  
+  # Уникальность
+  - duplicate_count(order_id) = 0:
+      name: "Нет дубликатов order_id"
+  
+  # Валидность
+  - invalid_count(order_value) = 0:
+      valid min: 0
+      name: "Сумма заказа не отрицательная"
+  
+  - invalid_count(status) = 0:
+      valid values: ['pending', 'completed', 'cancelled', 'returned']
+      name: "Статусы заказов валидны"
+  
+  - invalid_count(discount_percent) = 0:
+      valid min: 0
+      valid max: 100
+      name: "Скидка от 0% до 100%"
+  
+  # Свежесть (последние заказы не старше 7 дней)
+  - freshness using order_date < 7d:
+      name: "Последние заказы не старше 7 дней"
+  
+  # Референциальная целостность
+  - orphaned_orders = 0:
+      name: "Все entity_id существуют в справочнике"
+      orphaned_orders query: |
+        SELECT COUNT(*)
+        FROM f_orders o
+        LEFT JOIN d_entities e ON o.entity_id = e.entity_id
+        WHERE e.entity_id IS NULL
+
+# 3. Проверки для закупок (f_purchases)
+checks for f_purchases:
+  # Объем
+  - row_count > 0:
+      name: "Таблица закупок не пустая"
+  
+  # Полнота
+  - missing_count(entity_id) < 2:
+      name: "Не более 1 закупки без entity_id"
+  
+  # Валидность
+  - invalid_count(total_amount) = 0:
+      valid min: 0
+      name: "Сумма закупки не отрицательная"
+  
+  - invalid_count(items_count) = 0:
+      valid min: 1
+      name: "Количество товаров >= 1"
+  
+  # Статистические проверки
+  - avg(total_amount) between 100 and 2000:
+      name: "Средняя сумма закупки разумная"
+  
+  # Межтабличная проверка (custom SQL)
+  - recent_purchases_exist = 1:
+      name: "Есть закупки за последние 30 дней"
+      recent_purchases_exist query: |
+        SELECT CASE 
+          WHEN COUNT(*) > 0 THEN 1 
+          ELSE 0 
+        END
+        FROM f_purchases
+        WHERE purchase_date >= CURRENT_DATE - INTERVAL '30 days'
+
+# 4. Межтабличные проверки
+checks:
+  # Сравнение объемов
+  - orders_gt_purchases = 1:
+      name: "Заказов больше чем закупок"
+      orders_gt_purchases query: |
+        SELECT CASE 
+          WHEN (SELECT COUNT(*) FROM f_orders) > 
+               (SELECT COUNT(*) FROM f_purchases) 
+          THEN 1 
+          ELSE 0 
+        END
+  
+  # Проверка активности сущностей
+  - inactive_entities_with_orders = 0:
+      name: "Нет заказов у неактивных сущностей"
+      inactive_entities_with_orders query: |
+        SELECT COUNT(*)
+        FROM f_orders o
+        JOIN d_entities e ON o.entity_id = e.entity_id
+        WHERE e.is_active = false
 EOF
