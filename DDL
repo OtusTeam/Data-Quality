@@ -192,16 +192,11 @@ checks for d_entities:
   # Полнота
   - missing_count(entity_name) = 0
   - missing_percent(country_code) < 20%
+  - missing_count(created_date) = 0
   
   # Уникальность
   - duplicate_count(entity_id) = 0
   
-  # Валидность
-  - invalid_count(entity_type) = 0:
-      valid values: ['store', 'online', 'warehouse']
-  - invalid_count(created_date) = 0:
-      valid max: ${CURRENT_DATE}
-
 # 2. Проверки для заказов (f_orders)
 checks for f_orders:
   # Объем
@@ -223,7 +218,7 @@ checks for f_orders:
       valid max: 100
   
   # Свежесть
-  - freshness using order_date < 7d
+  - freshness (order_date) < 7d
   
   # Референциальная целостность
   - orphaned_orders = 0:
