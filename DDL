@@ -238,7 +238,7 @@ checks for f_purchases:
   # Объем
   - row_count > 0
   
-  # Полнота (НЕ ХВАТАЛО!)
+  # Полнота
   - missing_count(entity_id) <= 1:
       name: "Не более 1 закупки без entity_id"
   
