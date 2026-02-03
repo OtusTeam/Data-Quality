@@ -52,9 +52,7 @@ run_soda_checks = BashOperator(
     
     # Запускаем проверки Soda (используем simple_checks.yml)
     echo "Запуск Soda проверок..."
-    soda scan -d airflow_postgres \
-        -c /home/airflow/soda/configs/postgres_datasource.yml \
-        /home/airflow/soda/checks/simple_checks.yml
+    cd /home/airflow/soda && /usr/bin/python3 -m soda scan -d airflow_postgres -c configs/postgres_datasource.yml checks/simple_checks.yml
     
     echo ""
     echo "=== Проверки завершены ==="
