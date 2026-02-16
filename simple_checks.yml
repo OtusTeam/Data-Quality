@@ -1,0 +1,81 @@
+# ПРОСТЫЕ ПРОВЕРКИ ДЛЯ ДЕМОНСТРАЦИИ
+
+# 1. Проверки для справочника (d_entities)
+checks for d_entities:
+  # Объем
+  - row_count > 0
+  
+  # Полнота
+  - missing_count(entity_name) = 0
+  
+  - missing_percent(country_code) < 20%
+  
+  # Уникальность
+  - duplicate_count(entity_id) = 0
+  
+  # Валидность
+  - invalid_count(entity_type) = 0:
+      valid values: ['store', 'online', 'warehouse']
+  
+  - invalid_count(created_date) = 0:
+      valid max: ${CURRENT_DATE}
+
+# 2. Проверки для заказов (f_orders)
+checks for f_orders:
+  # Объем
+  - row_count > 0
+  
+  # Полнота
+  - missing_count(entity_id) = 0
+  
+  # Уникальность
+  - duplicate_count(order_id) = 0
+  
+  # Валидность
+  - invalid_count(order_value) = 0:
+      valid min: 0
+  
+  - invalid_count(status) = 0:
+      valid values: ['pending', 'completed', 'cancelled', 'returned']
+  
+  - invalid_count(discount_percent) = 0:
+      valid min: 0
+      valid max: 100
+  
+  # Свежесть
+  - freshness using order_date < 7d
+  
+  # Ссылочная целостность
+  - orphaned_orders = 0:
+      orphaned_orders query: |
+        SELECT COUNT(*)
+        FROM f_orders o
+        LEFT JOIN d_entities e ON o.entity_id = e.entity_id
+        WHERE e.entity_id IS NULL
+
+# 3. Проверки для закупок (f_purchases)
+checks for f_purchases:
+  # Объем
+  - row_count > 0
+  
+  # Валидность
+  - invalid_count(total_amount) = 0:
+      valid min: 0
+  
+  - invalid_count(items_count) = 0:
+      valid min: 1
+  
+  # Статистика
+  - avg(total_amount) between 100 and 2000
+
+# 4. Межтабличные проверки
+checks:
+  - orders_gt_purchases = 1:
+      orders_gt_purchases query: |
+        SELECT CASE 
+          WHEN (SELECT COUNT(*) FROM f_orders) > 
+               (SELECT COUNT(*) FROM f_purchases) 
+          THEN 1 
+          ELSE 0 
+        END
+EOF

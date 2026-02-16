@@ -1,0 +1,268 @@
+=== 1. Создание простых таблиц: ===
+
+# Подключаемся к PostgreSQL и создаем простые таблицы
+PGPASSWORD=airflow psql -h localhost -p 5432 -U airflow -d airflow << 'EOF'
+# Удаляем старые таблицы если есть
+PGPASSWORD=airflow psql -h localhost -p 5432 -U airflow -d airflow -c "
+DROP TABLE IF EXISTS f_purchases CASCADE;
+DROP TABLE IF EXISTS f_orders CASCADE;
+DROP TABLE IF EXISTS d_entities CASCADE;
+"
+
+# Создаем таблицы БЕЗ ограничений для тестирования
+PGPASSWORD=airflow psql -h localhost -p 5432 -U airflow -d airflow << 'EOF'
+-- 1. Справочник сущностей (без CHECK constraints для тестов)
+CREATE TABLE d_entities (
+    entity_id INT PRIMARY KEY,
+    entity_name VARCHAR(100),
+    entity_type VARCHAR(20),
+    country_code CHAR(2),
+    is_active BOOLEAN,
+    created_date DATE,
+    updated_dttm TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. Таблица заказов (без CHECK constraints для тестов)
+CREATE TABLE f_orders (
+    order_id SERIAL PRIMARY KEY,
+    entity_id INT,
+    order_date DATE,
+    order_value DECIMAL(10,2),
+    status VARCHAR(20),
+    customer_id INT,
+    has_discount BOOLEAN,
+    discount_percent DECIMAL(5,2),
+    created_dttm TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_dttm TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 3. Таблица закупок (без FOREIGN KEY для тестов)
+CREATE TABLE f_purchases (
+    purchase_id SERIAL PRIMARY KEY,
+    entity_id INT,
+    purchase_date DATE,
+    supplier_id INT,
+    total_amount DECIMAL(10,2),
+    items_count INT,
+    is_paid BOOLEAN,
+    created_dttm TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_dttm TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 1. Данные для d_entities (справочник)
+INSERT INTO d_entities (entity_id, entity_name, entity_type, country_code, is_active, created_date) VALUES
+-- Корректные данные
+(1, 'Main Store', 'store', 'US', true, '2023-01-01'),
+(2, 'Online Shop', 'online', 'US', true, '2023-02-01'),
+(3, 'NY Warehouse', 'warehouse', 'US', true, '2023-03-01'),
+(4, 'London Store', 'store', 'GB', true, '2023-04-01'),
+(5, 'Berlin Online', 'online', 'DE', true, '2023-05-01'),
+
+-- Данные с проблемами для тестов
+(6, '', 'store', 'FR', true, '2023-06-01'),  -- Пустое имя
+(7, 'Inactive Shop', 'online', 'IT', false, '2023-07-01'),  -- Неактивный
+(8, 'Invalid Type', 'invalid', 'ES', true, '2023-08-01'),  -- Неправильный тип
+(9, 'Future Shop', 'store', 'NL', true, '2025-01-01'),  -- Будущая дата
+(10, 'Duplicate ID', 'warehouse', 'BE', true, '2023-10-01');  -- (нормальный)
+
+-- 2. Данные для f_orders (заказы)
+INSERT INTO f_orders (entity_id, order_date, order_value, status, customer_id, has_discount, discount_percent) VALUES
+-- Январь 2024 - корректные
+(1, '2024-01-01', 100.50, 'completed', 101, false, 0),
+(2, '2024-01-01', 250.75, 'completed', 102, true, 10.0),
+(3, '2024-01-01', 500.00, 'pending', 103, false, 0),
+(1, '2024-01-02', 75.25, 'completed', 104, false, 0),
+
+-- Февраль 2024 - корректные
+(1, '2024-02-01', 300.00, 'completed', 105, true, 15.0),
+(2, '2024-02-01', 450.50, 'completed', 106, false, 0),
+(4, '2024-02-01', 200.00, 'cancelled', 107, false, 0),
+
+-- Данные с проблемами для тестов
+(1, '2024-03-01', -50.00, 'completed', 108, false, 0),  -- Отрицательная сумма
+(999, '2024-03-01', 100.00, 'completed', 109, false, 0),  -- Несуществующий entity_id
+(2, '2024-03-01', 150.00, 'invalid_status', 110, false, 0),  -- Неправильный статус
+(NULL, '2024-03-01', 80.00, 'pending', 111, false, 0),  -- NULL entity_id
+(3, '2024-03-01', 120.00, 'completed', NULL, false, 0),  -- NULL customer_id
+(1, '2024-03-01', 90.00, 'completed', 112, true, 150.0);  -- Скидка > 100%
+
+-- 3. Данные для f_purchases (закупки)
+INSERT INTO f_purchases (entity_id, purchase_date, supplier_id, total_amount, items_count, is_paid) VALUES
+-- Корректные данные
+(1, '2024-01-01', 201, 1000.00, 50, true),
+(2, '2024-01-01', 202, 500.00, 25, true),
+(3, '2024-01-01', 203, 750.00, 30, false),
+(4, '2024-01-02', 204, 1200.00, 60, true),
+
+-- Данные с проблемами для тестов
+(999, '2024-01-03', 205, 300.00, 15, true),  -- Несуществующий entity_id
+(5, '2024-01-03', NULL, 400.00, 20, false),  -- NULL supplier_id
+(1, '2024-01-03', 206, -200.00, 10, true),  -- Отрицательная сумма
+(2, '2024-01-03', 207, 600.00, 0, true),  -- Ноль товаров
+(3, '2024-01-03', 208, 800.00, -5, true);  -- Отрицательное количество
+
+-- 4. Проверяем что создалось
+SELECT 'd_entities' as table, COUNT(*) as rows FROM d_entities
+UNION ALL
+SELECT 'f_orders', COUNT(*) FROM f_orders
+UNION ALL
+SELECT 'f_purchases', COUNT(*) FROM f_purchases;
+EOF
+
+-------------------
+
+===  2. Тестовые данные с преднамеренными ошибками:  ===
+
+PGPASSWORD=airflow psql -h localhost -p 5432 -U airflow -d airflow << 'EOF'
+
+-- 1. Данные для d_entities (справочник)
+INSERT INTO d_entities (entity_id, entity_name, entity_type, country_code, is_active, created_date) VALUES
+-- Корректные данные
+(1, 'Main Store', 'store', 'US', true, '2023-01-01'),
+(2, 'Online Shop', 'online', 'US', true, '2023-02-01'),
+(3, 'NY Warehouse', 'warehouse', 'US', true, '2023-03-01'),
+(4, 'London Store', 'store', 'GB', true, '2023-04-01'),
+(5, 'Berlin Online', 'online', 'DE', true, '2023-05-01'),
+
+-- Данные с проблемами для тестов
+(6, '', 'store', 'FR', true, '2023-06-01'),  -- Пустое имя
+(7, 'Inactive Shop', 'online', 'IT', false, '2023-07-01'),  -- Неактивный
+(8, 'Invalid Type', 'invalid', 'ES', true, '2023-08-01'),  -- Неправильный тип
+(9, 'Future Shop', 'store', 'NL', true, '2025-01-01'),  -- Будущая дата
+(10, 'Duplicate ID', 'warehouse', 'BE', true, '2023-10-01');  -- (нормальный)
+
+-- 2. Данные для f_orders (заказы)
+INSERT INTO f_orders (entity_id, order_date, order_value, status, customer_id, has_discount, discount_percent) VALUES
+-- Январь 2024 - корректные
+(1, '2024-01-01', 100.50, 'completed', 101, false, 0),
+(2, '2024-01-01', 250.75, 'completed', 102, true, 10.0),
+(3, '2024-01-01', 500.00, 'pending', 103, false, 0),
+(1, '2024-01-02', 75.25, 'completed', 104, false, 0),
+
+-- Февраль 2024 - корректные
+(1, '2024-02-01', 300.00, 'completed', 105, true, 15.0),
+(2, '2024-02-01', 450.50, 'completed', 106, false, 0),
+(4, '2024-02-01', 200.00, 'cancelled', 107, false, 0),
+
+-- Данные с проблемами для тестов
+(1, '2024-03-01', -50.00, 'completed', 108, false, 0),  -- Отрицательная сумма
+(999, '2024-03-01', 100.00, 'completed', 109, false, 0),  -- Несуществующий entity_id
+(2, '2024-03-01', 150.00, 'invalid_status', 110, false, 0),  -- Неправильный статус
+(NULL, '2024-03-01', 80.00, 'pending', 111, false, 0),  -- NULL entity_id
+(3, '2024-03-01', 120.00, 'completed', NULL, false, 0),  -- NULL customer_id
+(1, '2024-03-01', 90.00, 'completed', 112, true, 150.0);  -- Скидка > 100%
+
+-- 3. Данные для f_purchases (закупки)
+INSERT INTO f_purchases (entity_id, purchase_date, supplier_id, total_amount, items_count, is_paid) VALUES
+-- Корректные данные
+(1, '2024-01-01', 201, 1000.00, 50, true),
+(2, '2024-01-01', 202, 500.00, 25, true),
+(3, '2024-01-01', 203, 750.00, 30, false),
+(4, '2024-01-02', 204, 1200.00, 60, true),
+
+-- Данные с проблемами для тестов
+(999, '2024-01-03', 205, 300.00, 15, true),  -- Несуществующий entity_id
+(5, '2024-01-03', NULL, 400.00, 20, false),  -- NULL supplier_id
+(1, '2024-01-03', 206, -200.00, 10, true),  -- Отрицательная сумма
+(2, '2024-01-03', 207, 600.00, 0, true),  -- Ноль товаров
+(3, '2024-01-03', 208, 800.00, -5, true);  -- Отрицательное количество
+
+-- 4. Проверяем что создалось
+SELECT 'd_entities' as table, COUNT(*) as rows FROM d_entities
+UNION ALL
+SELECT 'f_orders', COUNT(*) FROM f_orders
+UNION ALL
+SELECT 'f_purchases', COUNT(*) FROM f_purchases;
+
+EOF
+
+
+----------------
+
+=== 3. Файл проверок Soda: ===
+cat > ~/soda/checks/simple_checks.yml << 'EOF'
+# ПРОСТЫЕ ПРОВЕРКИ ДЛЯ ДЕМОНСТРАЦИИ
+
+# 1. Проверки для справочника (d_entities)
+checks for d_entities:
+  # Объем
+  - row_count > 0
+  - row_count between 5 and 15
+  
+  # Полнота
+  - missing_count(entity_name) = 0
+  - missing_percent(country_code) < 20%
+  - missing_count(created_date) = 0
+  
+  # Уникальность
+  - duplicate_count(entity_id) = 0
+  
+# 2. Проверки для заказов (f_orders)
+checks for f_orders:
+  # Объем
+  - row_count > 0
+  
+  # Полнота
+  - missing_count(entity_id) = 0
+  
+  # Уникальность
+  - duplicate_count(order_id) = 0
+  
+  # Валидность
+  - invalid_count(order_value) = 0:
+      valid min: 0
+  - invalid_count(status) = 0:
+      valid values: ['pending', 'completed', 'cancelled', 'returned']
+  - invalid_count(discount_percent) = 0:
+      valid min: 0
+      valid max: 100
+  
+  # Свежесть
+  - freshness (order_date) < 7d
+  
+  # Референциальная целостность
+  - orphaned_orders = 0:
+      orphaned_orders query: |
+        SELECT COUNT(*)
+        FROM f_orders o
+        LEFT JOIN d_entities e ON o.entity_id = e.entity_id
+        WHERE e.entity_id IS NULL
+
+# 3. Проверки для закупок (f_purchases)
+checks for f_purchases:
+  # Объем
+  - row_count > 0
+  
+  # Полнота
+  - missing_count(entity_id) <= 1:
+      name: "Не более 1 закупки без entity_id"
+  
+  # Валидность
+  - invalid_count(total_amount) = 0:
+      valid min: 0
+  - invalid_count(items_count) = 0:
+      valid min: 1
+  
+  # Статистика
+  - avg(total_amount) between 100 and 2000
+
+# 4. Межтабличные проверки
+checks:
+  # Сравнение объемов
+  - orders_gt_purchases = 1:
+      orders_gt_purchases query: |
+        SELECT CASE 
+          WHEN (SELECT COUNT(*) FROM f_orders) > 
+               (SELECT COUNT(*) FROM f_purchases) 
+          THEN 1 
+          ELSE 0 
+        END
+  
+  # Проверка активности сущностей
+  - inactive_entities_with_orders = 0:
+      inactive_entities_with_orders query: |
+        SELECT COUNT(*)
+        FROM f_orders o
+        JOIN d_entities e ON o.entity_id = e.entity_id
+        WHERE e.is_active = false
+EOF

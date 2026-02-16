@@ -1,0 +1,65 @@
+cat > /home/airflow/airflow/dags/soda_data_quality.py << 'EOF'
+"""
+Простой DAG для проверок качества данных с Soda CL
+Использует простые таблицы: d_entities, f_orders, f_purchases
+"""
+
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+from airflow.operators.dummy import DummyOperator
+
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': datetime(2024, 1, 1),
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+dag = DAG(
+    'soda_data_quality',
+    default_args=default_args,
+    description='Проверки качества данных с Soda',
+    schedule_interval='0 6 * * *',  # Каждый день в 06:00
+    catchup=False,
+    tags=['data-quality', 'soda'],
+)
+
+start = DummyOperator(task_id='start', dag=dag)
+end = DummyOperator(task_id='end', dag=dag)
+
+# Задача для проверок Soda
+run_soda_checks = BashOperator(
+    task_id='run_soda_data_quality_checks',
+    bash_command="""
+    echo "=== Запуск проверок качества данных ==="
+    echo "Время: $(date)"
+    echo ""
+    
+    # Устанавливаем переменные окружения для PostgreSQL
+    export POSTGRES_HOST=localhost
+    export POSTGRES_PORT=5432
+    export POSTGRES_USER=airflow
+    export POSTGRES_PASSWORD=airflow
+    export POSTGRES_DB=airflow
+    
+    # Проверяем что файлы существуют
+    echo "Проверка файлов конфигурации..."
+    ls -la /home/airflow/soda/configs/
+    ls -la /home/airflow/soda/checks/
+    echo ""
+    
+    # Запускаем проверки Soda (используем simple_checks.yml)
+    echo "Запуск Soda проверок..."
+    cd /home/airflow/soda && /usr/bin/python3 -m soda scan -d airflow_postgres -c configs/postgres_datasource.yml checks/simple_checks.yml
+    
+    echo ""
+    echo "=== Проверки завершены ==="
+    """,
+    dag=dag,
+)
+
+# Настраиваем зависимости
+start >> run_soda_checks >> end
+EOF
