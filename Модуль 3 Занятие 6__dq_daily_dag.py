@@ -1,5 +1,5 @@
 """
-Простой DAG для ежедневного запуска всех dq-вьюшек и записи в dq.dq_history
+Простой DAG dq_daily_dag.py для ежедневного запуска всех dq-вьюшек и записи в dq.dq_history
 """
 
 from datetime import datetime, timedelta
