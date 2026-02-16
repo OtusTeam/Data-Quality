@@ -1,0 +1,340 @@
+CREATE TABLE IF NOT EXISTS dq.dq_history (
+    dq_check_id INTEGER NOT NULL,
+    dq_dimension TEXT NOT NULL,
+    value NUMERIC NOT NULL,
+    target_value NUMERIC NOT NULL,
+    metric_weight NUMERIC NOT NULL,
+    dq_check_dttm TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_dttm TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE OR REPLACE VIEW dq.v_dq_1 AS
+
+/* 1
+Данные должны соблюдать иерархию согласно справочнику MSFO_PL_ITEMS_MAPPING. 
+Для каждого отчетного периода, завода и бизнес-сценария должно выполняться правило: показатель на родительском WBS-элементе = сумме показателей дочерних WBS-элементов. 
+Пример: VP-01-00-00 = VP-01-01-00 + VP-01-02-00
+*/
+
+WITH hierarchy AS 
+( -- Получаем иерархию из справочника (только связи родитель-ребенок)
+    SELECT wbs_element AS child_wbs
+         , parental_wbs_element AS parent_wbs
+      FROM b_pl_bm
+     WHERE parental_wbs_element IS NOT NULL  -- только элементы, у которых есть родитель
+),
+
+
+child_values AS 
+( -- Собираем все дочерние значения для каждого родителя в каждом контексте
+    SELECT f.scenario
+         , f.date
+         , f.plant
+         , h.parent_wbs AS parent_wbs
+         , SUM(CAST(f."rub" AS NUMERIC)) AS children_sum
+      FROM f_msfo_pl f
+      JOIN hierarchy h ON f."wbs_element" = h.child_wbs
+  GROUP BY f."scenario", f."date", f."plant", h.parent_wbs
+),
+
+
+parent_values AS 
+( -- Собираем родительские значения для тех же комбинаций
+    SELECT f."scenario"
+         , f."date"
+         , f."plant"
+         , f."wbs_element" AS parent_wbs 
+         , CAST(f."rub" AS NUMERIC) AS parent_value
+      FROM f_msfo_pl f
+     WHERE EXISTS (SELECT 1 FROM hierarchy where f."wbs_element" = hierarchy.parent_wbs)
+),
+
+
+details AS
+( -- Соединяем родительские и дочерние значения для сравнения
+    SELECT COALESCE(p."scenario", c."scenario") AS "scenario"
+         , COALESCE(p."date", c."date") AS "date"
+         , COALESCE(p."plant", c."plant") AS "plant"
+         , COALESCE(p.parent_wbs, c.parent_wbs) AS "wbs_element"
+         , p.parent_value AS "parent_value"
+         , c.children_sum AS "children_sum"
+         , COALESCE(p.parent_value, 0) - COALESCE(c.children_sum, 0) AS "difference"
+      FROM parent_values p
+ FULL JOIN child_values c ON p."scenario" = c."scenario" 
+                         AND p."date" = c."date" 
+                         AND p."plant" = c."plant" 
+                         AND p.parent_wbs = c.parent_wbs
+)
+--проверяем, есть ли строки с ненулевой разницей
+    SELECT 1 AS dq_check_id
+         , 'Согласованность' AS dq_dimension
+         , CASE WHEN (SELECT COUNT(*) FROM details WHERE difference > 1)=0 THEN 1 ELSE 0 END AS value
+         , 1 AS target_value
+         , 0.25 AS metric_weight
+         , CURRENT_TIMESTAMP AS dq_check_dttm;
+
+----------------
+
+CREATE OR REPLACE VIEW dq.v_dq_2 AS
+/* 2
+По трем ключевым сценариям (ОП, БП, Факт) в рамках существующих комбинаций завода и периода должны присутствовать значения по WBS-элементам VP,VL,NP-00-00-00.
+*/
+
+WITH details AS
+(
+    SELECT DISTINCT s."scenario"
+         , w."wbs_element"
+         , d."date"
+         , d."plant"
+      FROM 
+          (
+           VALUES ('ОП'), ('БП'), ('Факт')
+          )s(scenario)
+CROSS JOIN 
+          (
+           VALUES ('VL-00-00-00'), ('VP-00-00-00'), ('NP-00-00-00')
+          )w(wbs_element)
+CROSS JOIN
+          (
+           SELECT DISTINCT "date", "plant"
+             FROM f_msfo_pl
+            WHERE "scenario" IN ('Факт', 'БП', 'ОП')
+          )d
+     WHERE NOT EXISTS (
+                  		SELECT 1 
+                  		  FROM f_msfo_pl f
+                  		 WHERE f."scenario" = s."scenario"
+                    		   AND f."date" = d."date"
+                    		   AND f."plant" = d."plant"
+                    		   AND f."wbs_element" = w."wbs_element"
+                      )
+)
+
+    SELECT 2 AS dq_check_id
+         , 'Полнота' AS dq_dimension
+         , CASE WHEN (SELECT COUNT(*) FROM details)=0 THEN 1 ELSE 0 END AS value
+         , 1 AS target_value
+         , 0.1 AS metric_weight
+         , CURRENT_TIMESTAMP AS dq_check_dttm;
+
+-------------
+
+CREATE OR REPLACE VIEW dq.v_dq_3 AS
+/* 3
+Данные по сценарию Факт за отчетный месяц М-1 должны быть доступны не позднее 8 календарного дня месяца М, следующего за отчетным. 
+Данные по ОП за отчетный месяц М должны быть доступны потребителю не позднее 1 календарного дня отчетного месяца М. 
+*/
+
+SELECT 3 AS dq_check_id
+     , 'Своевременность' AS dq_dimension
+     , CASE WHEN EXTRACT(DAY FROM current_date) = 8 
+            THEN
+                 CASE WHEN EXISTS 
+                                 (
+                                  SELECT 1 
+                                    FROM f_msfo_pl 
+                                   WHERE "scenario" = 'Факт' 
+                                     AND "date"::date = date_trunc('month', current_date - interval '1' month)::date
+                                 )
+                      THEN 1 ELSE 0 END
+         WHEN EXTRACT(DAY FROM current_date) = 1 
+         THEN
+                 CASE WHEN EXISTS 
+                                 (
+                                  SELECT 1 
+                                    FROM f_msfo_pl 
+                                   WHERE "scenario" = 'ОП' 
+                                     AND "date"::date = date_trunc('month', current_date)::date
+                                )
+                      THEN 1 ELSE 0 END
+         ELSE 1
+         END AS value
+     , 1 AS target_value
+     , 0.1 AS metric_weight
+     , CURRENT_TIMESTAMP AS dq_check_dttm;
+
+-----------------
+
+CREATE OR REPLACE VIEW dq.v_dq_4 AS
+/* 4
+В отчете не могут присутствовать данные по другим заводам
+*/
+
+SELECT 4 AS dq_check_id
+     , 'Валидность' AS dq_dimension
+     , CASE WHEN EXISTS (SELECT 1 FROM f_msfo_pl WHERE "plant" IS DISTINCT FROM 'RU01') THEN 0 ELSE 1 END AS value
+     , 1 AS target_value
+     , 0.05 AS metric_weight
+     , CURRENT_TIMESTAMP AS dq_check_dttm;
+
+
+----------------
+
+CREATE OR REPLACE VIEW dq.v_dq_5 AS
+/* 5
+
+В рамках отчетного периода, сценария и завода, максимальная величина расхождения между отчетом P&L и базой маржинальности не должно превышать 1%. 
+Проверка выполняется только по статьям, указанным в маппинге. 
+Статье VP-00-00-00 в P&L соответствует статья "Складские затраты" в БМ, VL-00-00-00 - "Объем производства", NP-00-00-00 - "Выручка"
+*/
+
+WITH pl AS
+(
+    SELECT pl."scenario"
+         , pl."date"
+         , pl."plant"
+         , pl.wbs_element
+         , CAST(pl.rub AS NUMERIC) rub
+      FROM f_msfo_pl pl
+      JOIN b_pl_bm mapping ON pl.wbs_element = mapping.wbs_element
+),
+
+mb AS
+(
+    SELECT f_bm."scenario"
+         , f_bm."date"
+         , f_bm."plant"
+         , mapping."wbs_element"
+         , CAST(f_bm."rub" AS NUMERIC) rub
+      FROM f_bm
+      JOIN b_pl_bm mapping ON f_bm."showing" = mapping."marginality_base_showing"
+),
+
+details AS
+(
+    SELECT COALESCE(pl.scenario, mb.scenario) scenario
+         , COALESCE(pl.date, mb.date) date
+         , COALESCE(pl.plant, mb.plant) plant
+         , COALESCE(pl.wbs_element, mb.wbs_element) wbs_element
+         , COALESCE(pl.rub, 0) pl
+         , COALESCE(mb.rub, 0) mb
+         , ABS(COALESCE(pl.rub,0) - COALESCE(mb.rub,0)) discrepancy
+         , CASE WHEN 100 * ABS(COALESCE(pl.rub,0) - COALESCE(mb.rub,0)) / NULLIF(GREATEST(ABS(COALESCE(pl.rub,0)), ABS(COALESCE(mb.rub,0))), 0) > 1 
+                THEN 0.00 
+                ELSE 1.00 
+                 END is_valid
+      FROM pl
+ FULL JOIN mb ON pl.scenario = mb.scenario
+             AND pl.date = mb.date
+             AND pl.plant = mb.plant
+             AND pl.wbs_element = mb.wbs_element
+)
+
+    SELECT 5 AS dq_check_id
+         , 'Согласованность' AS dq_dimension
+         , AVG(is_valid) AS value
+         , 1 AS target_value
+         , 0.25 AS metric_weight
+         , CURRENT_TIMESTAMP AS dq_check_dttm
+      FROM details;
+
+
+----------------
+
+CREATE OR REPLACE VIEW dq.v_dq_6 AS
+/* 6
+Проверка формата и структуры статей: должны соответствовать маске XX-NN-NN-NN, где X - буквы, N - цифры
+*/
+
+    SELECT 6 AS dq_check_id
+         , 'Соответствие' AS dq_dimension
+         , AVG(CASE WHEN wbs_element IS NOT NULL AND wbs_element ~ '^[A-Z]{2}-\d{2}-\d{2}-\d{2}$' THEN 1.00 ELSE 0 END) AS value
+         , 1 AS target_value
+         , 0.0375 AS metric_weight
+         , CURRENT_TIMESTAMP AS dq_check_dttm
+      FROM f_msfo_pl;
+
+
+----------------
+
+
+
+CREATE OR REPLACE VIEW dq.v_dq_7 AS
+/* 7
+Существование статьи: код статьи есть в справочнике MSFO_PL_ITEMS_MAPPING (b_pl_bm)
+*/
+    SELECT 7 AS dq_check_id
+         , 'Целостность' AS dq_dimension
+         , CASE WHEN (SELECT COUNT(*) FROM f_msfo_pl f WHERE NOT EXISTS (SELECT 1 FROM b_pl_bm b WHERE f.wbs_element = b.wbs_element))=0
+                THEN 1
+                ELSE 0
+                 END AS value
+         , 1 AS target_value
+         , 0.0375 AS metric_weight
+         , CURRENT_TIMESTAMP AS dq_check_dttm;
+
+
+----------------
+
+
+CREATE OR REPLACE VIEW dq.v_dq_8 AS
+/* 8 
+Статья не может быть родителем самой себя
+*/
+    SELECT 8 AS dq_check_id
+         , 'Согласованность' AS dq_dimension
+         , CASE WHEN EXISTS (SELECT 1 FROM b_pl_bm WHERE wbs_element = parental_wbs_element) THEN 0 ELSE 1 END AS value
+         , 1 AS target_value
+         , 0.0375 AS metric_weight
+         , CURRENT_TIMESTAMP AS dq_check_dttm;
+
+-------------------
+
+CREATE OR REPLACE VIEW dq.v_dq_9 AS
+/* 9
+Нет двух строк с двумя уникальными комбинациями завод + период + статья + сценарий
+*/
+
+WITH duplicates_ AS
+(
+    SELECT plant
+         , date
+         , scenario
+         , wbs_element
+      FROM f_msfo_pl pl
+  GROUP BY plant
+         , date
+         , scenario
+         , wbs_element
+    HAVING COUNT(*) > 1
+)
+    SELECT 9 AS dq_check_id
+         , 'Уникальность' AS dq_dimension
+         , CASE WHEN EXISTS (SELECT 1 FROM duplicates_) 
+                THEN 0 
+                ELSE 1 
+                 END AS value
+         , 1 AS target_value
+         , 0.03 AS metric_weight
+         , CURRENT_TIMESTAMP AS dq_check_dttm;
+
+
+---------------------
+CREATE OR REPLACE VIEW dq.v_dq_10 AS
+/* 10
+
+Значение фактических складских затрат в рамках периода и завода не должно отклоняться от среднемесячных фактических складских затрат за прошлый год более, чем на 15%. 
+Значение за предыдущий год равняется 14000.
+*/
+
+WITH details AS
+(
+    SELECT date
+         , plant
+         , CASE WHEN CAST(rub AS NUMERIC) NOT BETWEEN 14000*0.85 AND 14000*1.15
+                THEN 0.00 
+                ELSE 1.00 
+                 END AS value
+      FROM f_msfo_pl pl
+     WHERE wbs_element = 'VP-00-00-00'
+       AND scenario = 'Факт'
+)
+    SELECT 10 AS dq_check_id
+         , 'Согласованность' AS dq_dimension
+         , AVG(value) AS value
+         , 1 AS target_value
+         , 0.1 AS metric_weight
+         , CURRENT_TIMESTAMP AS dq_check_dttm
+      FROM details;
+
+----------------
